@@ -15,6 +15,11 @@ from fido2 import cbor
 from fido2.cose import ES256
 from fido2.webauthn import AttestedCredentialData
 from fido2.utils import sha256
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.x509.oid import NameOID
+
+import datetime
 
 
 class SoftWebauthnDevice():
@@ -54,8 +59,9 @@ class SoftWebauthnDevice():
         if {'alg': -7, 'type': 'public-key'} not in options['publicKey']['pubKeyCredParams']:
             raise ValueError('Requested pubKeyCredParams does not contain supported type')
 
-        if ('attestation' in options['publicKey']) and (options['publicKey']['attestation'] not in [None, 'none']):
-            raise ValueError('Only none attestation supported')
+        attestation_type = options['publicKey'].get('attestation', 'none')
+        if attestation_type not in ['none', 'direct']:
+            raise ValueError('Only none and direct attestation supported')
 
         # prepare new key
         self.cred_init(options['publicKey']['rp']['id'], options['publicKey']['user']['id'])
@@ -72,13 +78,33 @@ class SoftWebauthnDevice():
         sign_count = pack('>I', self.sign_count)
         credential_id_length = pack('>H', len(self.credential_id))
         cose_key = cbor.encode(ES256.from_cryptography_key(self.private_key.public_key()))
-        attestation_object = {
-            'authData':
-                rp_id_hash + flags + sign_count
-                + self.aaguid + credential_id_length + self.credential_id + cose_key,
-            'fmt': 'none',
-            'attStmt': {}
-        }
+        authenticator_data = rp_id_hash + flags + sign_count + self.aaguid + credential_id_length + self.credential_id + cose_key
+        
+
+        # Add direct attestation support
+        if attestation_type == 'direct':
+            # Generate attestation certificate and private key
+            att_cert, att_priv_key = self._generate_attestation_certificate_and_key()
+
+            # Create a signature using the attestation private key
+            client_data_hash = sha256(json.dumps(client_data).encode('utf-8'))
+            signature = att_priv_key.sign(authenticator_data + client_data_hash, ec.ECDSA(hashes.SHA256()))
+
+            # Update the attestation object with direct attestation format
+            attestation_object = {
+                'authData': authenticator_data,
+                'fmt': 'direct',
+                'attStmt': {
+                    'sig': signature,
+                    'x5c': [att_cert.public_bytes(serialization.Encoding.DER)]
+                }
+            }
+        else:  # 'none' attestation
+            attestation_object = {
+                'authData': authenticator_data,
+                'fmt': 'none',
+                'attStmt': {}
+            }
 
         return {
             'id': urlsafe_b64encode(self.credential_id),
@@ -88,7 +114,36 @@ class SoftWebauthnDevice():
                 'attestationObject': cbor.encode(attestation_object)
             },
             'type': 'public-key'
-        }
+        }                
+        
+    @staticmethod
+    def _generate_attestation_certificate_and_key():
+        # Generate a private key for the attestation certificate
+        attestation_private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+
+        # Generate a self-signed attestation certificate
+        subject = issuer = x509.Name([
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+            x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "California"),
+            x509.NameAttribute(NameOID.LOCALITY_NAME, "San Francisco"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "SoftAuthenticator Inc."),
+            x509.NameAttribute(NameOID.COMMON_NAME, "softauthenticator.example.com"),
+        ])
+        attestation_certificate = x509.CertificateBuilder().subject_name(
+            subject
+        ).issuer_name(
+            issuer
+        ).public_key(
+            attestation_private_key.public_key()
+        ).serial_number(
+            x509.random_serial_number()
+        ).not_valid_before(
+            datetime.datetime.utcnow()
+        ).not_valid_after(
+            datetime.datetime.utcnow() + datetime.timedelta(days=365)
+        ).sign(attestation_private_key, hashes.SHA256(), default_backend())
+
+        return attestation_certificate, attestation_private_key
 
     def get(self, options, origin):
         """get authentication credential aka assertion"""
