@@ -6,6 +6,7 @@ applications
 import json
 import os
 from base64 import urlsafe_b64encode
+import pickle
 from struct import pack
 
 from cryptography.hazmat.backends import default_backend
@@ -15,6 +16,9 @@ from fido2 import cbor
 from fido2.cose import ES256
 from fido2.webauthn import AttestedCredentialData
 from fido2.utils import sha256
+from cryptography.hazmat.primitives import serialization
+
+
 
 
 class SoftWebauthnDevice():
@@ -125,3 +129,48 @@ class SoftWebauthnDevice():
             },
             'type': 'public-key'
         }
+
+
+    def to_dict(self, password=None):
+        """Convert the SoftWebauthnDevice object to a dictionary."""
+        if password and isinstance(password, str):
+            password = password.encode('utf-8')
+        return {
+            'credential_id': self.credential_id,
+            'private_key': self.private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption() if password is None else serialization.BestAvailableEncryption(password),
+            ),
+            'aaguid': self.aaguid,
+            'rp_id': self.rp_id,
+            'user_handle': self.user_handle,
+            'sign_count': self.sign_count
+        }
+        
+    def to_bytes(self,password=None):
+        """Convert the SoftWebauthnDevice object to a byte string."""
+        return pickle.dumps(self.to_dict(password=password))
+
+    @classmethod
+    def from_dict(cls, data, password=None):
+        """Create a SoftWebauthnDevice object from a dictionary."""
+        if password and isinstance(password, str):
+            password = password.encode('utf-8')
+        device = cls()
+        device.credential_id = data['credential_id']
+        device.private_key = serialization.load_pem_private_key(
+            data['private_key'],
+            password=password,
+            backend=default_backend()
+        )
+        device.aaguid = data['aaguid']
+        device.rp_id = data['rp_id']
+        device.user_handle = data['user_handle']
+        device.sign_count = data['sign_count']
+        return device
+    
+    @classmethod
+    def from_bytes(cls, data, password=None):
+        """Create a SoftWebauthnDevice object from a byte string."""
+        return cls.from_dict(pickle.loads(data, password=password))
