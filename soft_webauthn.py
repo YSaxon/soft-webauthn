@@ -20,7 +20,6 @@ from cryptography.hazmat.primitives import serialization
 
 
 
-
 class SoftWebauthnDevice():
     """
     This simulates the Webauthn browser API with a authenticator device
