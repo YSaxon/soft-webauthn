@@ -173,4 +173,4 @@ class SoftWebauthnDevice():
     @classmethod
     def from_bytes(cls, data, password=None):
         """Create a SoftWebauthnDevice object from a byte string."""
-        return cls.from_dict(pickle.loads(data, password=password))
+        return cls.from_dict(pickle.loads(data),password=password)
